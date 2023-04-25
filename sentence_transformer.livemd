@@ -1,0 +1,46 @@
+# Text embeddings
+
+```elixir
+Mix.install(
+  [
+    {:kino_bumblebee, "~> 0.1.0"},
+    {:exla, "~> 0.4.1"}
+  ],
+  config: [nx: [default_backend: EXLA.Backend]]
+)
+```
+
+## Section
+
+Given https://github.com/elixir-nx/bumblebee/issues/100#issuecomment-1372230339 use mean pooling to correct result
+
+```elixir
+{:ok, model_info} =
+  Bumblebee.load_model({:hf, "sentence-transformers/all-MiniLM-L6-v2"}, log_params_diff: false)
+
+{:ok, tokenizer} = Bumblebee.load_tokenizer({:hf, "sentence-transformers/all-MiniLM-L6-v2"})
+
+inputs = Bumblebee.apply_tokenizer(tokenizer, ["Winter dogs"])
+
+other_inputs =
+  Bumblebee.apply_tokenizer(tokenizer, [
+    "Two dogs in snow",
+    "Install Jupyter Notebook | Learn How to Install and Use Jupyter Notebook",
+    "A picture of London at night",
+    "Fastai on Apple M1 - Deep Learning - fast.ai Course Forums: https://forums.fast.ai/t/fastai-on-apple-m1/86059/50"
+  ])
+
+embedding = Axon.predict(model_info.model, model_info.params, inputs, compiler: EXLA)
+embeddings = Axon.predict(model_info.model, model_info.params, other_inputs, compiler: EXLA)
+
+result = Bumblebee.Utils.Nx.cosine_similarity(embedding.pooled_state, embeddings.pooled_state)
+```
+
+```elixir
+input_mask_expanded = Nx.new_axis(inputs["attention_mask"], -1)
+
+result
+|> Nx.multiply(input_mask_expanded)
+|> Nx.sum(axes: [1])
+|> Nx.divide(Nx.sum(input_mask_expanded, axes: [1]))
+```
