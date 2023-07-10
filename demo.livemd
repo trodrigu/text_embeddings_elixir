@@ -1,0 +1,90 @@
+# Text embeddings and querying demo
+
+```elixir
+Mix.install(
+  [
+    {:exla, "~> 0.5.3"},
+    {:scholar, "~> 0.1.0"},
+    {:bumblebee, "~> 0.3.0", github: "elixir-nx/bumblebee", branch: "main"},
+    {:sqlite_vss, "~> 0.1.1-alpha.19"},
+    {:exqlite, "~> 0.13.14", override: true},
+    {:ecto_sqlite3, ">= 0.0.0"},
+    {:ecto_sql, "~> 3.6"}
+  ],
+  config: [nx: [default_backend: EXLA.Backend]]
+)
+```
+
+## Simple Embedding Example
+
+```elixir
+model = {:hf, "sentence-transformers/all-MiniLM-L6-v2"}
+{:ok, model_info} = Bumblebee.load_model(model)
+
+{:ok, tokenizer} = Bumblebee.load_tokenizer(model)
+
+serving =
+  Bumblebee.Text.TextEmbedding.text_embedding(model_info, tokenizer,
+    output_pool: :mean_pooling,
+    output_attribute: :hidden_state
+  )
+
+text = "Software engineer in the Healthcare industry"
+
+result =
+  Nx.Serving.run(serving, text)[:embedding]
+  |> Scholar.Preprocessing.normalize()
+```
+
+## Query SQlite DB of vectors
+
+```elixir
+Mix.Task.run("sqlite_vss.install")
+
+defmodule Repo do
+  use Ecto.Repo,
+    adapter: Ecto.Adapters.SQLite3,
+    otp_app: :demo,
+    database: "soft_jobs.db",
+    load_extensions: [SqliteVss.loadable_path_vector0(), SqliteVss.loadable_path_vss0()]
+end
+
+defmodule Post do
+  use Ecto.Schema
+
+  schema "posts" do
+    field(:summary, :string)
+  end
+end
+
+defmodule Main do
+  import Ecto.Query, warn: false
+
+  def run(search) do
+    children = [Repo]
+
+    {:ok, _} = Supervisor.start_link(children, strategy: :one_for_one)
+
+    subquery =
+      from(sp in "vss_posts",
+        where:
+          fragment(
+            "vss_search(?, ?)",
+            field(sp, :summary_embedding),
+            type(^Nx.to_binary(search), :binary)
+          ),
+        select: [:rowid, :distance],
+        order_by: sp.distance,
+        limit: 10
+      )
+
+    from(p in Post,
+      join: sp in subquery(subquery),
+      on: p.id == sp.rowid
+    )
+  end
+end
+
+Main.run(result)
+|> Repo.all()
+```
